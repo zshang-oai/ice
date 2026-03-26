@@ -1826,8 +1826,6 @@ func (a *Agent) Piggyback(packet []byte, end bool) bool {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
 	if a.piggyback.state == PiggybackingStateOff {
-		// TODO: ѕhould we store the packet for later so we
-		// can send it when the connection gets established?
 		return a.connectionState != ConnectionStateConnected
 	}
 
@@ -1888,7 +1886,6 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 	}
 	if packet == nil && acks == nil && a.piggyback.acks != nil {
 		a.log.Infof("Done with the SPED handshake", a.piggyback.state)
-		// TODO: check that we are in pending state?
 		a.piggyback.acks = nil
 		a.piggyback.state = PiggybackingStateComplete
 		a.piggyback.mu.Unlock()
@@ -1908,7 +1905,6 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 		removed := beforeLen - len(a.piggyback.packets)
 
 		// Adjust the index if it's out of bounds after deletion
-		// TODO: for fairness one should only adjust if the index was affected?
 		if a.piggyback.packetsIndex >= removed {
 			a.piggyback.packetsIndex -= removed
 		} else {

@@ -160,7 +160,8 @@ func (s *controllingSelector) HandleBindingRequest(message *stun.Message, local,
 }
 
 func (s *controllingSelector) HandleSuccessResponse(message *stun.Message, local, remote Candidate,
-	remoteAddr net.Addr) {
+	remoteAddr net.Addr,
+) {
 	ok, pendingRequest, rtt := s.agent.handleInboundBindingSuccess(message.TransactionID)
 	if !ok {
 		s.log.Warnf("Discard success response from (%s), unknown TransactionID 0x%x", remote, message.TransactionID)
@@ -406,7 +407,8 @@ func (s *controlledSelector) PingCandidate(local, remote Candidate) {
 }
 
 func (s *controlledSelector) HandleSuccessResponse(message *stun.Message, local, remote Candidate,
-	remoteAddr net.Addr) {
+	remoteAddr net.Addr,
+) {
 	//nolint:godox
 	// TODO according to the standard we should specifically answer a failed nomination:
 	// https://tools.ietf.org/html/rfc8445#section-7.3.1.5
