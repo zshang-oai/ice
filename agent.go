@@ -37,8 +37,6 @@ type bindingRequest struct {
 	destination     net.Addr
 	isUseCandidate  bool
 	nominationValue *uint32 // Tracks nomination value for renomination requests
-	// TODO: having a callback or the original request would be useful for SPED
-	// so that the response can do the "implicit" ack of the packet in the request
 }
 
 type packetWithCrc struct {
@@ -1904,13 +1902,8 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 	if size := len(acks); size > 0 {
 		beforeLen := len(a.piggyback.packets)
 		a.piggyback.packets = slices.DeleteFunc(a.piggyback.packets, func(p packetWithCrc) bool {
-			for _, ackCrc := range acks {
-				if p.crc == ackCrc {
-					return true // This packet is acknowledged, so remove it.
-				}
-			}
-
-			return false // This packet is not acknowledged, so keep it.
+			// Remove packets that were acknowledged.
+			return slices.Contains(acks, p.crc)
 		})
 		removed := beforeLen - len(a.piggyback.packets)
 

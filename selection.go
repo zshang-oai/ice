@@ -182,7 +182,6 @@ func (s *controllingSelector) HandleSuccessResponse(message *stun.Message, local
 		return
 	}
 
-	// TODO: get the implicit ack from the pendingRequest.
 	reportPiggybacking(s.agent, message, remote)
 
 	s.log.Tracef("Inbound STUN (SuccessResponse) from %s to %s", remote, local)
@@ -461,7 +460,6 @@ func (s *controlledSelector) HandleSuccessResponse(message *stun.Message, local,
 
 	pair.UpdateRoundTripTime(rtt)
 
-	// TODO: get the implicit ack from the pendingRequest.
 	reportPiggybacking(s.agent, message, remote)
 }
 
