@@ -38,6 +38,22 @@ type bindingRequest struct {
 	nominationValue *uint32 // Tracks nomination value for renomination requests
 }
 
+// STUNSendHandler allows applications to inspect or modify outbound Binding
+// responses before they are sent.
+//
+// The callback receives the outbound message plus the inbound request that
+// triggered it.
+type STUNSendHandler func(
+	outbound, inbound *stun.Message,
+	local, remote Candidate,
+) error
+
+type stunSetterFunc func(*stun.Message) error
+
+func (f stunSetterFunc) AddTo(message *stun.Message) error {
+	return f(message)
+}
+
 // Agent represents the ICE agent.
 type Agent struct {
 	loop *taskloop.Loop
@@ -134,6 +150,8 @@ type Agent struct {
 	// Callback that allows user to implement custom behavior
 	// for STUN Binding Requests
 	userBindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+	// Callback that allows user to inspect or modify outbound STUN messages.
+	stunSendHandler STUNSendHandler
 
 	gatherCandidateCancel func()
 	gatherCandidateDone   chan struct{}
@@ -1420,7 +1438,7 @@ func (a *Agent) sendBindingRequest(msg *stun.Message, local, remote Candidate) {
 	a.sendSTUN(msg, local, remote)
 }
 
-func (a *Agent) sendBindingSuccess(m *stun.Message, local, remote Candidate) {
+func (a *Agent) sendBindingSuccess(request *stun.Message, local, remote Candidate) {
 	base := remote
 
 	ip, port, _, err := parseAddr(base.addr())
@@ -1430,21 +1448,39 @@ func (a *Agent) sendBindingSuccess(m *stun.Message, local, remote Candidate) {
 		return
 	}
 
-	if out, err := stun.Build(m, stun.BindingSuccess,
+	if out, err := stun.Build(
+		request,
+		stun.BindingSuccess,
 		&stun.XORMappedAddress{
 			IP:   ip.AsSlice(),
 			Port: port,
 		},
+		stunSetterFunc(func(outbound *stun.Message) error {
+			if a.stunSendHandler == nil {
+				return nil
+			}
+
+			if err := a.stunSendHandler(outbound, request, local, remote); err != nil {
+				a.log.Tracef("Failed to process STUN message before send: %s", err)
+
+				return err
+			}
+
+			return nil
+		}),
 		stun.NewShortTermIntegrity(a.localPwd),
 		stun.Fingerprint,
 	); err != nil {
 		a.log.Warnf("Failed to handle inbound ICE from: %s to: %s error: %s", local, remote, err)
+
+		return
 	} else {
 		if pair := a.findPair(local, remote); pair != nil {
 			pair.UpdateResponseSent()
 		} else {
 			a.log.Warnf("Failed to find pair for add binding response from %s to %s", local, remote)
 		}
+
 		a.sendSTUN(out, local, remote)
 	}
 }

@@ -789,6 +789,20 @@ func WithBindingRequestHandler(
 	}
 }
 
+// WithSTUNSendHandler sets a handler that can inspect or modify outbound STUN
+// messages before they are sent.
+func WithSTUNSendHandler(handler STUNSendHandler) AgentOption {
+	return func(a *Agent) error {
+		if a.constructed {
+			return ErrAgentOptionNotUpdatable
+		}
+
+		a.stunSendHandler = handler
+
+		return nil
+	}
+}
+
 // WithEnableUseCandidateCheckPriority enables checking for equal or higher priority when
 // switching selected candidate pair if the peer requests USE-CANDIDATE and agent is a lite agent.
 // This is disabled by default, i.e. when peer requests USE-CANDIDATE, the selected pair will be

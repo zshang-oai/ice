@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -251,6 +252,23 @@ func newPingNoIOCand() *pingNoIOCand {
 }
 func (d *pingNoIOCand) writeTo(b []byte, _ Candidate) (int, error) { return len(b), nil }
 
+type capturePingNoIOCand struct {
+	pingNoIOCand
+	lastWrite []byte
+}
+
+func newCapturePingNoIOCand() *capturePingNoIOCand {
+	return &capturePingNoIOCand{
+		pingNoIOCand: *newPingNoIOCand(),
+	}
+}
+
+func (d *capturePingNoIOCand) writeTo(b []byte, _ Candidate) (int, error) {
+	d.lastWrite = append(d.lastWrite[:0], b...)
+
+	return len(b), nil
+}
+
 func bareAgentForPing() *Agent {
 	return &Agent{
 		hostAcceptanceMinWait:  time.Hour,
@@ -319,6 +337,61 @@ func TestControlledSelector_PingCandidate_BuildError(t *testing.T) {
 	sel.PingCandidate(local, remote)
 
 	require.NotEmpty(t, testLogger.lastErrorMessage, "expected error to be logged from stun.Build")
+}
+
+func TestSTUNSendHandlerOverridesBindingSuccessResponseAddress(t *testing.T) {
+	agent := bareAgentForPing()
+	agent.localPwd = selectionTestPassword
+	agent.log = logging.NewDefaultLoggerFactory().NewLogger("test")
+
+	overrideAddr := netip.MustParseAddrPort("203.0.113.10:45678")
+	handlerCalled := false
+	agent.stunSendHandler = func(
+		outbound, inbound *stun.Message,
+		_, _ Candidate,
+	) error {
+		handlerCalled = true
+		require.NotNil(t, outbound)
+		require.NotNil(t, inbound)
+
+		return outbound.Build(
+			inbound,
+			stun.BindingSuccess,
+			&stun.XORMappedAddress{
+				IP:   overrideAddr.Addr().AsSlice(),
+				Port: int(overrideAddr.Port()),
+			},
+		)
+	}
+
+	local := newCapturePingNoIOCand()
+	local.candidateBase.networkType = NetworkTypeUDP4
+	local.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 10000}
+	remote := newPingNoIOCand()
+	remote.candidateBase.networkType = NetworkTypeUDP4
+	remote.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.2"), Port: 20000}
+	agent.addPair(local, remote)
+
+	req, err := stun.Build(
+		stun.BindingRequest,
+		stun.TransactionID,
+		stun.NewShortTermIntegrity(agent.localPwd),
+		stun.Fingerprint,
+	)
+	require.NoError(t, err)
+
+	agent.sendBindingSuccess(req, local, remote)
+	require.True(t, handlerCalled)
+	require.NotEmpty(t, local.lastWrite)
+
+	resp := new(stun.Message)
+	resp.Raw = append([]byte(nil), local.lastWrite...)
+	require.NoError(t, resp.Decode())
+
+	var xorMapped stun.XORMappedAddress
+	require.NoError(t, xorMapped.GetFrom(resp))
+	require.True(t, xorMapped.IP.Equal(overrideAddr.Addr().AsSlice()))
+	require.Equal(t, int(overrideAddr.Port()), xorMapped.Port)
 }
 
 type warnTestLogger struct {

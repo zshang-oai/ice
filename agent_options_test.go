@@ -483,6 +483,36 @@ func TestWithBindingRequestHandler(t *testing.T) {
 	})
 }
 
+func TestWithSTUNSendHandler(t *testing.T) {
+	t.Run("sets STUN send handler", func(t *testing.T) {
+		handlerCalled := false
+		handler := func(_ *stun.Message, _ *stun.Message, _, _ Candidate) error {
+			handlerCalled = true
+
+			return nil
+		}
+
+		agent, err := NewAgentWithOptions(WithSTUNSendHandler(handler))
+		assert.NoError(t, err)
+		defer agent.Close() //nolint:errcheck
+
+		assert.NotNil(t, agent.stunSendHandler)
+
+		if agent.stunSendHandler != nil {
+			assert.NoError(t, agent.stunSendHandler(nil, nil, nil, nil))
+			assert.True(t, handlerCalled)
+		}
+	})
+
+	t.Run("default is nil", func(t *testing.T) {
+		agent, err := NewAgentWithOptions()
+		assert.NoError(t, err)
+		defer agent.Close() //nolint:errcheck
+
+		assert.Nil(t, agent.stunSendHandler)
+	})
+}
+
 func TestWithEnableUseCandidateCheckPriority(t *testing.T) {
 	testBooleanOption(t, booleanOptionTest{
 		optionFunc:   WithEnableUseCandidateCheckPriority,
@@ -506,6 +536,9 @@ func TestMultipleConfigOptions(t *testing.T) {
 			WithTCPPriorityOffset(customOffset),
 			WithDisableActiveTCP(),
 			WithBindingRequestHandler(handler),
+			WithSTUNSendHandler(func(_ *stun.Message, _ *stun.Message, _, _ Candidate) error {
+				return nil
+			}),
 			WithEnableUseCandidateCheckPriority(),
 		)
 		assert.NoError(t, err)
@@ -515,6 +548,7 @@ func TestMultipleConfigOptions(t *testing.T) {
 		assert.Equal(t, customOffset, agent.tcpPriorityOffset)
 		assert.True(t, agent.disableActiveTCP)
 		assert.NotNil(t, agent.userBindingRequestHandler)
+		assert.NotNil(t, agent.stunSendHandler)
 		assert.True(t, agent.enableUseCandidateCheckPriority)
 
 		if agent.userBindingRequestHandler != nil {
