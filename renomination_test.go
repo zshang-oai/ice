@@ -48,6 +48,26 @@ func (m *mockPacketConnWithCapture) SetDeadline(time.Time) error      { return n
 func (m *mockPacketConnWithCapture) SetReadDeadline(time.Time) error  { return nil }
 func (m *mockPacketConnWithCapture) SetWriteDeadline(time.Time) error { return nil }
 
+func attributeIndex(msg *stun.Message, attr stun.AttrType) int {
+	for i, raw := range msg.Attributes {
+		if raw.Type == attr {
+			return i
+		}
+	}
+
+	return -1
+}
+
+func assertAttributeBefore(t *testing.T, msg *stun.Message, before, after stun.AttrType) {
+	t.Helper()
+
+	beforeIndex := attributeIndex(msg, before)
+	afterIndex := attributeIndex(msg, after)
+	assert.NotEqual(t, -1, beforeIndex)
+	assert.NotEqual(t, -1, afterIndex)
+	assert.Less(t, beforeIndex, afterIndex)
+}
+
 // createRenominationTestAgent creates a test agent with renomination enabled and returns local/remote candidates.
 func createRenominationTestAgent(t *testing.T, controlling bool) (*Agent, Candidate, Candidate) {
 	t.Helper()
@@ -360,6 +380,9 @@ func TestSendNominationRequest(t *testing.T) {
 		pair := agent.addPair(local, remote)
 		pair.state = CandidatePairStateSucceeded
 
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+		assert.True(t, agent.Piggyback([]byte("renomination-dtls"), true))
+
 		// Test sendNominationRequest directly
 		nominationValue := uint32(123)
 		err = agent.sendNominationRequest(pair, nominationValue)
@@ -385,6 +408,15 @@ func TestSendNominationRequest(t *testing.T) {
 		err = nomination.GetFrom(msg)
 		assert.NoError(t, err)
 		assert.Equal(t, nominationValue, nomination.Value)
+
+		// Verify nomination and SPED attributes are covered by message integrity and fingerprint.
+		assert.True(t, msg.Contains(stun.AttrDtlsInStunAck))
+		assert.True(t, msg.Contains(stun.AttrDtlsInStun))
+		assertAttributeBefore(t, msg, agent.nominationAttribute, stun.AttrMessageIntegrity)
+		assertAttributeBefore(t, msg, stun.AttrDtlsInStunAck, stun.AttrMessageIntegrity)
+		assertAttributeBefore(t, msg, stun.AttrDtlsInStun, stun.AttrMessageIntegrity)
+		assertAttributeBefore(t, msg, stun.AttrMessageIntegrity, stun.AttrFingerprint)
+		assert.Equal(t, len(msg.Attributes)-1, attributeIndex(msg, stun.AttrFingerprint))
 	})
 
 	t.Run("STUN message without nomination when disabled", func(t *testing.T) {
