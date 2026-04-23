@@ -65,6 +65,53 @@ type piggybackingController struct {
 	newFlight    bool
 }
 
+func clonePiggybackPacket(packet []byte) []byte {
+	if packet == nil {
+		return nil
+	}
+
+	result := make([]byte, len(packet))
+	copy(result, packet)
+
+	return result
+}
+
+func clonePiggybackAcks(acks []uint32) []uint32 {
+	if acks == nil {
+		return nil
+	}
+
+	result := make([]uint32, len(acks))
+	copy(result, acks)
+
+	return result
+}
+
+func (p *piggybackingController) resetLocked(state piggybackingState, cb func(packet []byte, rAddr net.Addr)) {
+	p.state = state
+	p.packets = []packetWithCrc{}
+	p.packetsIndex = 0
+	p.acks = []uint32{}
+	p.dtlsCallback = cb
+	p.newFlight = false
+}
+
+func (p *piggybackingController) finishLocked() {
+	p.state = PiggybackingStatePending
+	p.packets = []packetWithCrc{}
+	p.packetsIndex = 0
+	if p.acks == nil {
+		p.acks = []uint32{}
+	}
+	p.dtlsCallback = nil
+	p.newFlight = false
+}
+
+func (p *piggybackingController) queuePacketLocked(packet []byte) {
+	crc := crc32.ChecksumIEEE(packet)
+	p.packets = append(p.packets, packetWithCrc{clonePiggybackPacket(packet), crc})
+}
+
 // Agent represents the ICE agent.
 type Agent struct {
 	loop *taskloop.Loop
@@ -793,11 +840,13 @@ func (a *Agent) updateConnectionState(newState ConnectionState) {
 
 		var packetsToFlush []packetWithCrc
 		a.piggyback.mu.Lock()
-		if newState == ConnectionStateConnected && a.piggyback.state == PiggybackingStateOff {
-			// Piggybacking was discovered as not supported.
+		if newState == ConnectionStateConnected &&
+			(a.piggyback.state == PiggybackingStateOff || a.piggyback.state == PiggybackingStateComplete) {
+			// Piggybacking was discovered as not supported or has finished.
 			// Flush any pending DTLS packets.
-			packetsToFlush = a.piggyback.packets
+			packetsToFlush = append([]packetWithCrc{}, a.piggyback.packets...)
 			a.piggyback.packets = []packetWithCrc{}
+			a.piggyback.packetsIndex = 0
 		}
 		a.piggyback.mu.Unlock()
 
@@ -1814,10 +1863,19 @@ func (a *Agent) getSelectedPair() *CandidatePair {
 func (a *Agent) SetDtlsCallback(cb func(packet []byte, rAddr net.Addr)) {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
-	a.piggyback.dtlsCallback = cb
 	if cb != nil {
-		a.piggyback.state = PiggybackingStateTentative
+		a.piggyback.resetLocked(PiggybackingStateTentative, cb)
+
+		return
 	}
+
+	if a.piggyback.state == PiggybackingStatePending {
+		a.piggyback.finishLocked()
+
+		return
+	}
+
+	a.piggyback.resetLocked(PiggybackingStateOff, nil)
 }
 
 // Piggyback stores a packet to be picked in a round-robin fashion.
@@ -1825,8 +1883,20 @@ func (a *Agent) SetDtlsCallback(cb func(packet []byte, rAddr net.Addr)) {
 func (a *Agent) Piggyback(packet []byte, end bool) bool {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
-	if a.piggyback.state == PiggybackingStateOff {
-		return a.connectionState != ConnectionStateConnected
+	if a.piggyback.state == PiggybackingStateOff || a.piggyback.state == PiggybackingStateComplete {
+		if a.connectionState == ConnectionStateConnected {
+			return false
+		}
+		if packet != nil {
+			if a.piggyback.newFlight {
+				a.piggyback.packets = []packetWithCrc{}
+				a.piggyback.packetsIndex = 0
+			}
+			a.piggyback.newFlight = end
+			a.piggyback.queuePacketLocked(packet)
+		}
+
+		return true
 	}
 
 	if packet != nil {
@@ -1834,15 +1904,15 @@ func (a *Agent) Piggyback(packet []byte, end bool) bool {
 		// to clear the outgoing list.
 		if a.piggyback.newFlight {
 			a.piggyback.packets = []packetWithCrc{}
+			a.piggyback.packetsIndex = 0
 		}
 		a.piggyback.newFlight = end
-		crc := crc32.ChecksumIEEE(packet)
-		a.piggyback.packets = append(a.piggyback.packets, packetWithCrc{packet, crc})
+		a.piggyback.queuePacketLocked(packet)
 	} else {
 		a.piggyback.state = PiggybackingStatePending
 	}
-	// If we are connected we could send DTLS plain.
-	return true // a.connectionState == ConnectionStateConnected
+
+	return true
 }
 
 // GetPiggybackDataAndAcks returns a packet from the stored list in a round-robin fashion and a list of acks.
@@ -1854,17 +1924,13 @@ func (a *Agent) GetPiggybackDataAndAcks() ([]byte, []uint32) {
 		return nil, nil
 	}
 	if len(a.piggyback.packets) == 0 {
-		return nil, a.piggyback.acks
+		return nil, clonePiggybackAcks(a.piggyback.acks)
 	}
 
 	packet := a.piggyback.packets[a.piggyback.packetsIndex]
 	a.piggyback.packetsIndex = (a.piggyback.packetsIndex + 1) % len(a.piggyback.packets)
 
-	// Return a copy to prevent external modification of the internal buffer
-	result := make([]byte, len(packet.data))
-	copy(result, packet.data)
-
-	return result, a.piggyback.acks
+	return clonePiggybackPacket(packet.data), clonePiggybackAcks(a.piggyback.acks)
 }
 
 func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr) { //nolint:cyclop
@@ -1884,10 +1950,18 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 
 		return
 	}
-	if packet == nil && acks == nil && a.piggyback.acks != nil {
-		a.log.Infof("Done with the SPED handshake", a.piggyback.state)
+	if packet == nil && acks == nil && a.piggyback.state == PiggybackingStatePending {
+		a.log.Infof("Done with the SPED handshake")
 		a.piggyback.acks = nil
 		a.piggyback.state = PiggybackingStateComplete
+		a.piggyback.packets = []packetWithCrc{}
+		a.piggyback.packetsIndex = 0
+		a.piggyback.newFlight = false
+		a.piggyback.mu.Unlock()
+
+		return
+	}
+	if packet == nil && acks == nil {
 		a.piggyback.mu.Unlock()
 
 		return
@@ -1897,18 +1971,14 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 	}
 	// Handle incoming acks.
 	if size := len(acks); size > 0 {
-		beforeLen := len(a.piggyback.packets)
 		a.piggyback.packets = slices.DeleteFunc(a.piggyback.packets, func(p packetWithCrc) bool {
 			// Remove packets that were acknowledged.
 			return slices.Contains(acks, p.crc)
 		})
-		removed := beforeLen - len(a.piggyback.packets)
-
-		// Adjust the index if it's out of bounds after deletion
-		if a.piggyback.packetsIndex >= removed {
-			a.piggyback.packetsIndex -= removed
-		} else {
+		if len(a.piggyback.packets) == 0 {
 			a.piggyback.packetsIndex = 0
+		} else if a.piggyback.packetsIndex >= len(a.piggyback.packets) {
+			a.piggyback.packetsIndex %= len(a.piggyback.packets)
 		}
 	}
 	if len(packet) == 0 {
@@ -2154,8 +2224,6 @@ func (a *Agent) sendNominationRequest(pair *CandidatePair, nominationValue uint3
 		UseCandidate(),
 		AttrControlling(a.tieBreaker),
 		PriorityAttr(pair.Local.Priority()),
-		stun.NewShortTermIntegrity(a.remotePwd),
-		stun.Fingerprint,
 	}
 
 	// Add nomination attribute if renomination is enabled and value > 0
@@ -2175,6 +2243,9 @@ func (a *Agent) sendNominationRequest(pair *CandidatePair, nominationValue uint3
 			attributes = append(attributes, DtlsInStunAttribute(packet))
 		}
 	}
+	attributes = append(attributes,
+		stun.NewShortTermIntegrity(a.remotePwd),
+		stun.Fingerprint)
 
 	msg, err := stun.Build(append([]stun.Setter{stun.BindingRequest}, attributes...)...)
 	if err != nil {
