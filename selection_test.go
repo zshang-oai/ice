@@ -58,6 +58,11 @@ func sendUntilDone(t *testing.T, writingConn, readingConn net.Conn, maxAttempts 
 			}
 
 			_, err := writingConn.Write(testMessage)
+			if errors.Is(err, ErrNoCandidatePairs) {
+				attempts++
+
+				continue
+			}
 			require.NoError(t, err)
 			attempts++
 		case <-readDone.Done():

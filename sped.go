@@ -36,7 +36,10 @@ func (d *DtlsInStunAttribute) GetFrom(m *stun.Message) error {
 type DtlsInStunAckAttribute []uint32
 
 // Acks are 32 bit values, the attribute can carry up to four of these.
-const ackSizeBytes, ackSizeValues = 32, 4
+const (
+	ackSizeValues = 4
+	ackSizeBytes  = ackSizeValues * 4
+)
 
 // AddTo adds DTLS-in-STUN-ACK attribute to message.
 func (a DtlsInStunAckAttribute) AddTo(m *stun.Message) error {

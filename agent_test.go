@@ -3611,4 +3611,24 @@ func TestSped(t *testing.T) {
 		require.Len(t, gotAcks, 1)
 		require.Equal(t, wantAck, gotAcks[0])
 	})
+
+	t.Run("New flight reset clears round-robin index", func(t *testing.T) {
+		agent := newSPEDTestAgent(t)
+		defer func() {
+			require.NoError(t, agent.Close())
+		}()
+
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+		require.True(t, agent.Piggyback([]byte("flight 1 packet 1"), false))
+		require.True(t, agent.Piggyback([]byte("flight 1 packet 2"), true))
+
+		packet, _ := agent.GetPiggybackDataAndAcks()
+		require.Equal(t, []byte("flight 1 packet 1"), packet)
+
+		require.True(t, agent.Piggyback([]byte("flight 2 packet 1"), true))
+		require.NotPanics(t, func() {
+			packet, _ = agent.GetPiggybackDataAndAcks()
+		})
+		require.Equal(t, []byte("flight 2 packet 1"), packet)
+	})
 }
