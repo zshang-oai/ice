@@ -765,8 +765,8 @@ func (a *Agent) updateConnectionState(newState ConnectionState) {
 	}
 
 	if newState == ConnectionStateConnected {
-		// If piggybacking has been discovered as not supported
-		// flush any pending DTLS packets.
+		// If piggybacking has been discovered as not supported or has
+		// finished, flush any pending DTLS packets.
 		if packets := a.piggyback.flushOnConnected(); len(packets) > 0 {
 			if pair := a.getSelectedPair(); pair != nil {
 				for _, p := range packets {
