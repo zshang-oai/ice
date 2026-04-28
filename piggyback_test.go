@@ -17,6 +17,19 @@ import (
 func TestSped(t *testing.T) {
 	defer test.CheckRoutines(t)()
 
+	newSPEDTestAgent := func(t *testing.T) *Agent {
+		t.Helper()
+
+		agent, err := NewAgent(&AgentConfig{
+			NetworkTypes: supportedNetworkTypes(),
+		})
+		require.NoError(t, err)
+
+		return agent
+	}
+
+	remoteAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 3478}
+
 	t.Run("Basic embedding", func(t *testing.T) {
 		aNotifier, aConnected := onConnected()
 		aAgent, err := NewAgent(&AgentConfig{
@@ -68,5 +81,45 @@ func TestSped(t *testing.T) {
 
 		require.Equal(t, toA, fromB)
 		require.Equal(t, toB, fromA)
+	})
+
+	t.Run("Confirmed ignores empty non-SPED messages", func(t *testing.T) {
+		agent := newSPEDTestAgent(t)
+		defer func() {
+			require.NoError(t, agent.Close())
+		}()
+
+		fromAgent := []byte("Hello from agent")
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+		require.True(t, agent.Piggyback(fromAgent, true))
+
+		agent.ReportPiggybacking([]byte("Hello from remote"), nil, remoteAddr)
+		agent.ReportPiggybacking(nil, nil, remoteAddr)
+
+		agent.piggyback.mu.Lock()
+		require.Equal(t, piggybackingState(PiggybackingStateConfirmed), agent.piggyback.state)
+		agent.piggyback.mu.Unlock()
+
+		packet, acks := agent.GetPiggybackDataAndAcks()
+		require.Equal(t, fromAgent, packet)
+		require.NotNil(t, acks)
+	})
+
+	t.Run("Pending completes on empty non-SPED messages", func(t *testing.T) {
+		agent := newSPEDTestAgent(t)
+		defer func() {
+			require.NoError(t, agent.Close())
+		}()
+
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+		require.True(t, agent.Piggyback([]byte("Hello from agent"), true))
+		agent.ReportPiggybacking([]byte("Hello from remote"), nil, remoteAddr)
+
+		require.True(t, agent.Piggyback(nil, true))
+		agent.ReportPiggybacking(nil, nil, remoteAddr)
+
+		agent.piggyback.mu.Lock()
+		require.Equal(t, piggybackingState(PiggybackingStateComplete), agent.piggyback.state)
+		agent.piggyback.mu.Unlock()
 	})
 }

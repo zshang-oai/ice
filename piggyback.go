@@ -114,10 +114,12 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 
 		return
 	}
-	if packet == nil && acks == nil && a.piggyback.acks != nil {
-		a.log.Infof("Done with the SPED handshake", a.piggyback.state)
-		a.piggyback.acks = nil
-		a.piggyback.state = PiggybackingStateComplete
+	if packet == nil && acks == nil {
+		if a.piggyback.state == PiggybackingStatePending && a.piggyback.acks != nil {
+			a.log.Infof("Done with the SPED handshake")
+			a.piggyback.acks = nil
+			a.piggyback.state = PiggybackingStateComplete
+		}
 		a.piggyback.mu.Unlock()
 
 		return
