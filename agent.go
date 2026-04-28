@@ -2042,8 +2042,6 @@ func (a *Agent) sendNominationRequest(pair *CandidatePair, nominationValue uint3
 		UseCandidate(),
 		AttrControlling(a.tieBreaker),
 		PriorityAttr(pair.Local.Priority()),
-		stun.NewShortTermIntegrity(a.remotePwd),
-		stun.Fingerprint,
 	}
 
 	// Add nomination attribute if renomination is enabled and value > 0
@@ -2055,6 +2053,11 @@ func (a *Agent) sendNominationRequest(pair *CandidatePair, nominationValue uint3
 		a.log.Tracef("Sending renomination request from %s to %s with nomination value %d",
 			pair.Local, pair.Remote, nominationValue)
 	}
+
+	attributes = append(attributes,
+		stun.NewShortTermIntegrity(a.remotePwd),
+		stun.Fingerprint,
+	)
 
 	msg, err := stun.Build(append([]stun.Setter{stun.BindingRequest}, attributes...)...)
 	if err != nil {
