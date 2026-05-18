@@ -50,6 +50,14 @@ func (a *Agent) SetDtlsCallback(cb func(packet []byte, rAddr net.Addr)) {
 	}
 }
 
+func (a *Agent) isPiggybackingActive() bool {
+	a.piggyback.mu.Lock()
+	defer a.piggyback.mu.Unlock()
+
+	return a.piggyback.state != PiggybackingStateOff &&
+		a.piggyback.state != PiggybackingStateComplete
+}
+
 // Piggyback stores a packet to be picked in a round-robin fashion.
 // Returns `true` if packet is to be consumed.
 func (a *Agent) Piggyback(packet []byte, end bool) bool {

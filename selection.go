@@ -473,6 +473,12 @@ func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, 
 		pair = s.agent.addPair(local, remote)
 	}
 	pair.UpdateRequestReceived()
+	if s.agent.lite && s.agent.isPiggybackingActive() && pair.state != CandidatePairStateFailed {
+		// ICE-lite does not have a successful outbound check before nomination.
+		// During SPED, the authenticated inbound check is enough evidence to let
+		// the pending DTLS flight ride back on this BindingResponse.
+		pair.state = CandidatePairStateSucceeded
+	}
 
 	if message.Contains(stun.AttrUseCandidate) || message.Contains(s.agent.nominationAttribute) { //nolint:nestif
 		// https://tools.ietf.org/html/rfc8445#section-7.3.1.5

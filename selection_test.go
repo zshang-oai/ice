@@ -465,6 +465,93 @@ func TestControlledSelector_TriggeredCheckDuringChecking(t *testing.T) {
 		"triggered check should be sent during ICE checking phase")
 }
 
+func TestLiteControlledSelector_SpedInboundCheckMakesPairWritableBeforeNomination(t *testing.T) {
+	agent := bareAgentForPing()
+	agent.log = logging.NewDefaultLoggerFactory().NewLogger("test")
+	agent.remoteUfrag = selectionTestRemoteUfrag
+	agent.localUfrag = selectionTestLocalUfrag
+	agent.remotePwd = selectionTestPassword
+	agent.localPwd = selectionTestPassword
+	agent.tieBreaker = 1
+	agent.lite = true
+	agent.isControlling.Store(false)
+	agent.onConnected = make(chan struct{})
+	agent.SetDtlsCallback(func([]byte, net.Addr) {})
+	agent.setSelector()
+
+	liteSelector, ok := agent.getSelector().(*liteSelector)
+	require.True(t, ok, "expected liteSelector")
+	selector, ok := liteSelector.pairCandidateSelector.(*controlledSelector)
+	require.True(t, ok, "expected controlledSelector")
+
+	local := newPingNoIOCand()
+	local.candidateBase.networkType = NetworkTypeUDP4
+	local.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 10000}
+
+	remote := newPingNoIOCand()
+	remote.candidateBase.networkType = NetworkTypeUDP4
+	remote.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.2"), Port: 20000}
+
+	msg, err := stun.Build(stun.BindingRequest,
+		stun.TransactionID,
+		stun.NewUsername(agent.localUfrag+":"+agent.remoteUfrag),
+		DtlsInStunAckAttribute([]uint32{}),
+		stun.NewShortTermIntegrity(agent.localPwd),
+		stun.Fingerprint,
+	)
+	require.NoError(t, err)
+
+	selector.HandleBindingRequest(msg, local, remote)
+
+	pair := agent.findPair(local, remote)
+	require.NotNil(t, pair)
+	assert.Equal(t, CandidatePairStateSucceeded, pair.state)
+	assert.Nil(t, agent.getSelectedPair(), "pair should be valid before it is nominated")
+	assert.Same(t, pair, agent.getBestValidCandidatePair())
+}
+
+func TestLiteControlledSelector_NonSpedInboundCheckDoesNotMakePairWritableBeforeNomination(t *testing.T) {
+	agent := bareAgentForPing()
+	agent.log = logging.NewDefaultLoggerFactory().NewLogger("test")
+	agent.remoteUfrag = selectionTestRemoteUfrag
+	agent.localUfrag = selectionTestLocalUfrag
+	agent.remotePwd = selectionTestPassword
+	agent.localPwd = selectionTestPassword
+	agent.tieBreaker = 1
+	agent.lite = true
+	agent.isControlling.Store(false)
+	agent.onConnected = make(chan struct{})
+	agent.setSelector()
+
+	liteSelector, ok := agent.getSelector().(*liteSelector)
+	require.True(t, ok, "expected liteSelector")
+	selector, ok := liteSelector.pairCandidateSelector.(*controlledSelector)
+	require.True(t, ok, "expected controlledSelector")
+
+	local := newPingNoIOCand()
+	local.candidateBase.networkType = NetworkTypeUDP4
+	local.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 10000}
+
+	remote := newPingNoIOCand()
+	remote.candidateBase.networkType = NetworkTypeUDP4
+	remote.candidateBase.resolvedAddr = &net.UDPAddr{IP: net.ParseIP("192.168.1.2"), Port: 20000}
+
+	msg, err := stun.Build(stun.BindingRequest,
+		stun.TransactionID,
+		stun.NewUsername(agent.localUfrag+":"+agent.remoteUfrag),
+		stun.NewShortTermIntegrity(agent.localPwd),
+		stun.Fingerprint,
+	)
+	require.NoError(t, err)
+
+	selector.HandleBindingRequest(msg, local, remote)
+
+	pair := agent.findPair(local, remote)
+	require.NotNil(t, pair)
+	assert.Equal(t, CandidatePairStateWaiting, pair.state)
+	assert.Nil(t, agent.getBestValidCandidatePair())
+}
+
 func TestAutomaticRenomination(t *testing.T) { //nolint:maintidx
 	report := test.CheckRoutines(t)
 	defer report()
