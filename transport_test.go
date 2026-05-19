@@ -443,6 +443,71 @@ func TestConn_Write_RejectsSTUN(t *testing.T) {
 	require.ErrorIs(t, werr, errWriteSTUNMessageToIceConn)
 }
 
+func TestStartDialConnWriteBeforeConnectReturnsErrorWhilePiggybacking(t *testing.T) {
+	defer test.CheckRoutines(t)()
+	defer test.TimeOut(10 * time.Second).Stop()
+
+	cfg := &AgentConfig{
+		NetworkTypes:     supportedNetworkTypes(),
+		MulticastDNSMode: MulticastDNSModeDisabled,
+	}
+	agentA, err := NewAgent(cfg)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, agentA.Close())
+	}()
+	agentA.SetDtlsCallback(func([]byte, net.Addr) {})
+
+	agentB, err := NewAgent(cfg)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, agentB.Close())
+	}()
+
+	bUfrag, bPwd, err := agentB.GetLocalUserCredentials()
+	require.NoError(t, err)
+
+	conn, err := agentA.StartDial(bUfrag, bPwd)
+	require.NoError(t, err)
+
+	n, werr := conn.Write([]byte("early application data"))
+	require.Zero(t, n)
+	require.ErrorIs(t, werr, ErrNoCandidatePairs)
+	require.Zero(t, conn.BytesSent())
+}
+
+func TestStartDialConnWriteBeforeConnectPreservesLegacyNoErrorWithoutPiggybacking(t *testing.T) {
+	defer test.CheckRoutines(t)()
+	defer test.TimeOut(10 * time.Second).Stop()
+
+	cfg := &AgentConfig{
+		NetworkTypes:     supportedNetworkTypes(),
+		MulticastDNSMode: MulticastDNSModeDisabled,
+	}
+	agentA, err := NewAgent(cfg)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, agentA.Close())
+	}()
+
+	agentB, err := NewAgent(cfg)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, agentB.Close())
+	}()
+
+	bUfrag, bPwd, err := agentB.GetLocalUserCredentials()
+	require.NoError(t, err)
+
+	conn, err := agentA.StartDial(bUfrag, bPwd)
+	require.NoError(t, err)
+
+	n, werr := conn.Write([]byte("early application data"))
+	require.Zero(t, n)
+	require.NoError(t, werr)
+	require.Zero(t, conn.BytesSent())
+}
+
 func TestConn_GetCandidatePairsInfo(t *testing.T) {
 	defer test.CheckRoutines(t)()
 	defer test.TimeOut(10 * time.Second).Stop()
@@ -632,4 +697,42 @@ func TestConn_WriteToPair_Success(t *testing.T) {
 	n, err = cb.Read(buf)
 	require.NoError(t, err)
 	require.Equal(t, testData, buf[:n])
+}
+
+func TestConn_CanWriteUsesBestValidPair(t *testing.T) {
+	defer test.CheckRoutines(t)()
+
+	cfg := &AgentConfig{
+		NetworkTypes: []NetworkType{NetworkTypeUDP4},
+	}
+	agent, err := NewAgent(cfg)
+	require.NoError(t, err)
+	defer func() {
+		_ = agent.Close()
+	}()
+
+	conn := &Conn{agent: agent}
+	require.False(t, conn.CanWrite())
+
+	local, err := NewCandidateHost(&CandidateHostConfig{
+		Network:   "udp",
+		Address:   "192.168.1.1",
+		Port:      1234,
+		Component: ComponentRTP,
+	})
+	require.NoError(t, err)
+	remote, err := NewCandidateHost(&CandidateHostConfig{
+		Network:   "udp",
+		Address:   "192.168.1.2",
+		Port:      5678,
+		Component: ComponentRTP,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, agent.loop.Run(agent.loop, func(_ context.Context) {
+		pair := agent.addPair(local, remote)
+		pair.state = CandidatePairStateSucceeded
+	}))
+
+	require.True(t, conn.CanWrite())
 }
