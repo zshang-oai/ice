@@ -97,7 +97,7 @@ func TestSped(t *testing.T) {
 		agent.ReportPiggybacking(nil, nil, remoteAddr)
 
 		agent.piggyback.mu.Lock()
-		require.Equal(t, piggybackingState(PiggybackingStateConfirmed), agent.piggyback.state)
+		require.Equal(t, PiggybackingStateConfirmed, agent.piggyback.state)
 		agent.piggyback.mu.Unlock()
 
 		packet, acks := agent.GetPiggybackDataAndAcks()
@@ -119,7 +119,7 @@ func TestSped(t *testing.T) {
 		agent.ReportPiggybacking(nil, nil, remoteAddr)
 
 		agent.piggyback.mu.Lock()
-		require.Equal(t, piggybackingState(PiggybackingStateComplete), agent.piggyback.state)
+		require.Equal(t, PiggybackingStateComplete, agent.piggyback.state)
 		agent.piggyback.mu.Unlock()
 	})
 }

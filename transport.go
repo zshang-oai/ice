@@ -141,7 +141,7 @@ func (c *Conn) Write(packet []byte) (int, error) {
 		}
 
 		if pair == nil {
-			return 0, err
+			return 0, ErrNoCandidatePairs
 		}
 	}
 
@@ -153,6 +153,23 @@ func (c *Conn) Write(packet []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// CanWrite reports whether the Conn can write application data through either
+// its selected pair or its best valid pair.
+func (c *Conn) CanWrite() bool {
+	if c.agent.getSelectedPair() != nil {
+		return true
+	}
+
+	var pair *CandidatePair
+	if err := c.agent.loop.Run(c.agent.loop, func(_ context.Context) {
+		pair = c.agent.getBestValidCandidatePair()
+	}); err != nil {
+		return false
+	}
+
+	return pair != nil
 }
 
 // GetCandidatePairsInfo returns snapshot information for all candidate pairs.
