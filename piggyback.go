@@ -79,7 +79,8 @@ func (a *Agent) isPiggybackingActive() bool {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
 
-	return a.piggyback.state != PiggybackingStateOff &&
+	return a.piggyback.dtlsCallback != nil &&
+		a.piggyback.state != PiggybackingStateOff &&
 		a.piggyback.state != PiggybackingStateComplete
 }
 

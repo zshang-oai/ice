@@ -437,8 +437,6 @@ func (s *controlledSelector) HandleSuccessResponse(message *stun.Message, local,
 }
 
 func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, remote Candidate) { //nolint:cyclop
-	s.agent.reportPiggybackingFromMessage(message, remote)
-
 	pair := s.agent.findPair(local, remote)
 	if pair == nil {
 		pair = s.agent.addPair(local, remote)
@@ -450,6 +448,7 @@ func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, 
 		// the pending DTLS flight ride back on this BindingResponse.
 		pair.state = CandidatePairStateSucceeded
 	}
+	s.agent.reportPiggybackingFromMessage(message, remote)
 
 	if message.Contains(stun.AttrUseCandidate) || message.Contains(s.agent.nominationAttribute) { //nolint:nestif
 		// https://tools.ietf.org/html/rfc8445#section-7.3.1.5
