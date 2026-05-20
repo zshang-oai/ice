@@ -7,6 +7,7 @@ package ice
 
 import (
 	"context"
+	"hash/crc32"
 	"net"
 	"testing"
 
@@ -121,5 +122,48 @@ func TestSped(t *testing.T) {
 		agent.piggyback.mu.Lock()
 		require.Equal(t, PiggybackingStateComplete, agent.piggyback.state)
 		agent.piggyback.mu.Unlock()
+	})
+
+	t.Run("Out-of-order ACKs retire only the matching packets", func(t *testing.T) {
+		agent := newSPEDTestAgent(t)
+		defer func() {
+			require.NoError(t, agent.Close())
+		}()
+
+		firstPacket := []byte("first")
+		secondPacket := []byte("second")
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+		require.True(t, agent.Piggyback(firstPacket, false))
+		require.True(t, agent.Piggyback(secondPacket, true))
+
+		agent.ReportPiggybacking([]byte("remote"), []uint32{
+			crc32.ChecksumIEEE(secondPacket),
+		}, remoteAddr)
+
+		packet, _ := agent.GetPiggybackDataAndAcks()
+		require.Equal(t, firstPacket, packet)
+
+		agent.ReportPiggybacking(nil, []uint32{
+			crc32.ChecksumIEEE(firstPacket),
+		}, remoteAddr)
+
+		packet, _ = agent.GetPiggybackDataAndAcks()
+		require.Nil(t, packet)
+	})
+
+	t.Run("Duplicate inbound DTLS keeps one ACK entry", func(t *testing.T) {
+		agent := newSPEDTestAgent(t)
+		defer func() {
+			require.NoError(t, agent.Close())
+		}()
+
+		inbound := []byte("duplicate")
+		agent.SetDtlsCallback(func([]byte, net.Addr) {})
+
+		agent.ReportPiggybacking(inbound, nil, remoteAddr)
+		agent.ReportPiggybacking(inbound, nil, remoteAddr)
+
+		_, acks := agent.GetPiggybackDataAndAcks()
+		require.Equal(t, []uint32{crc32.ChecksumIEEE(inbound)}, acks)
 	})
 }
