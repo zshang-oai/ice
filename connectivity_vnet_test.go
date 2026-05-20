@@ -805,3 +805,140 @@ func TestWriteUseValidPair(t *testing.T) {
 
 	require.NoError(t, wan.Stop())
 }
+
+// SPED lets an ICE-lite controlled agent treat an authenticated inbound check
+// as writable before the controlling peer's nomination request arrives.
+func TestSpedLiteWriteUsesBestValidPairAcrossMultipleInterfacesBeforeNomination(t *testing.T) {
+	defer test.CheckRoutines(t)()
+
+	defer test.TimeOut(time.Second * 10).Stop()
+
+	loggerFactory := logging.NewDefaultLoggerFactory()
+	wan, err := vnet.NewRouter(&vnet.RouterConfig{
+		CIDR:          "0.0.0.0/0",
+		LoggerFactory: loggerFactory,
+	})
+	require.NoError(t, err)
+
+	var useCandidateRequests atomic.Uint64
+	wan.AddChunkFilter(func(c vnet.Chunk) bool {
+		if !stun.IsMessage(c.UserData()) {
+			return true
+		}
+
+		m := &stun.Message{Raw: c.UserData()}
+		if decErr := m.Decode(); decErr != nil {
+			return false
+		}
+		if m.Contains(stun.AttrUseCandidate) {
+			useCandidateRequests.Add(1)
+
+			return false
+		}
+
+		return true
+	})
+
+	fullNet, err := vnet.NewNet(&vnet.NetConfig{
+		StaticIPs: []string{"192.168.0.1", "192.168.0.3"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, wan.AddNet(fullNet))
+
+	liteNet, err := vnet.NewNet(&vnet.NetConfig{
+		StaticIPs: []string{"192.168.0.2", "192.168.0.4"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, wan.AddNet(liteNet))
+
+	require.NoError(t, wan.Start())
+	defer func() {
+		require.NoError(t, wan.Stop())
+	}()
+
+	checkInterval := 10 * time.Millisecond
+	fullAgent, err := NewAgent(&AgentConfig{
+		NetworkTypes:      supportedNetworkTypes(),
+		MulticastDNSMode:  MulticastDNSModeDisabled,
+		Net:               fullNet,
+		CheckInterval:     &checkInterval,
+		KeepaliveInterval: &checkInterval,
+	})
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, fullAgent.Close())
+	}()
+
+	liteAgent, err := NewAgent(&AgentConfig{
+		NetworkTypes:      supportedNetworkTypes(),
+		CandidateTypes:    []CandidateType{CandidateTypeHost},
+		MulticastDNSMode:  MulticastDNSModeDisabled,
+		Net:               liteNet,
+		Lite:              true,
+		CheckInterval:     &checkInterval,
+		KeepaliveInterval: &checkInterval,
+	})
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, liteAgent.Close())
+	}()
+
+	fullAgent.SetDtlsCallback(func([]byte, net.Addr) {})
+	liteAgent.SetDtlsCallback(func([]byte, net.Addr) {})
+	require.True(t, fullAgent.Piggyback([]byte("client-hello"), false))
+
+	gatherAndExchangeCandidates(t, fullAgent, liteAgent)
+
+	fullUfrag, fullPwd, err := fullAgent.GetLocalUserCredentials()
+	require.NoError(t, err)
+	liteUfrag, litePwd, err := liteAgent.GetLocalUserCredentials()
+	require.NoError(t, err)
+
+	liteConn, err := liteAgent.StartAccept(fullUfrag, fullPwd)
+	require.NoError(t, err)
+	fullConn, err := fullAgent.StartDial(liteUfrag, litePwd)
+	require.NoError(t, err)
+
+	require.Eventually(t, liteConn.CanWrite, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, fullConn.CanWrite, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return useCandidateRequests.Load() > 0
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Nil(t, liteAgent.getSelectedPair())
+	require.Nil(t, fullAgent.getSelectedPair())
+
+	expected := []byte("server-data-before-nomination")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := liteConn.Write(expected)
+		writeDone <- writeErr
+	}()
+
+	readDone := make(chan []byte, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len(expected))
+		n, readErrValue := fullConn.Read(buf)
+		if readErrValue != nil {
+			readErr <- readErrValue
+
+			return
+		}
+		readDone <- buf[:n]
+	}()
+
+	select {
+	case err = <-writeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out writing over best valid pair before nomination")
+	}
+	select {
+	case err = <-readErr:
+		require.NoError(t, err)
+	case actual := <-readDone:
+		require.Equal(t, expected, actual)
+	case <-time.After(time.Second):
+		t.Fatal("timed out reading over best valid pair before nomination")
+	}
+}
