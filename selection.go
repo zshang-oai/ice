@@ -469,7 +469,7 @@ func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, 
 			return
 		}
 
-		if pair.state == CandidatePairStateSucceeded || s.agent.lite {
+		if pair.state == CandidatePairStateSucceeded || (s.agent.lite && s.agent.isPiggybackingActive()) {
 			// For full agents: pair reached Succeeded via a triggered check (RFC 8445 §7.3.1.5).
 			// For lite agents: RFC 8445 §7.3.2 — the lite agent directly constructs the pair,
 			// places it in the valid list, and sets the nominated flag; no triggered check needed.
@@ -501,7 +501,8 @@ func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, 
 	// on every inbound request creates a ping-pong busy loop: the remote side responds
 	// and sends its own request, which triggers another check here, repeating at 1/RTT.
 	// After connection, consent freshness is maintained by checkKeepalive() on a timer.
-	if !s.agent.lite && (pair.state != CandidatePairStateSucceeded || s.agent.getSelectedPair() == nil) {
+	if (!s.agent.lite || !s.agent.isPiggybackingActive()) &&
+		(pair.state != CandidatePairStateSucceeded || s.agent.getSelectedPair() == nil) {
 		s.PingCandidate(local, remote)
 	}
 

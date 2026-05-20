@@ -1631,11 +1631,9 @@ func TestControllingSideRenomination(t *testing.T) {
 // Lite mode tests
 // ---------------------------------------------------------------------------
 
-// TestLiteControlledSelector_NoPingCandidate verifies that a lite controlled
-// agent NEVER sends triggered connectivity checks (PingCandidate), regardless
-// of the pair state. Per RFC 8445 §7, a lite implementation only acts as a
-// STUN server and does not generate connectivity checks.
-func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
+// TestLiteControlledSelector_TriggeredCheckBehavior verifies the split between
+// the legacy non-SPED path and the SPED passive-aggressive path.
+func TestLiteControlledSelector_TriggeredCheckBehavior(t *testing.T) {
 	buildMsg := func(t *testing.T, a *Agent) *stun.Message {
 		t.Helper()
 		msg, err := stun.Build(stun.BindingRequest,
@@ -1649,7 +1647,7 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 		return msg
 	}
 
-	setupAgent := func(t *testing.T) (*Agent, *pingNoIOCand, *pingNoIOCand, *CandidatePair) {
+	setupAgent := func(t *testing.T, enableSPED bool) (*Agent, *pingNoIOCand, *pingNoIOCand, *CandidatePair) {
 		t.Helper()
 		liteAgent := bareAgentForPing()
 		liteAgent.log = logging.NewDefaultLoggerFactory().NewLogger("test")
@@ -1661,6 +1659,9 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 		liteAgent.lite = true
 		liteAgent.isControlling.Store(false)
 		liteAgent.onConnected = make(chan struct{})
+		if enableSPED {
+			liteAgent.SetDtlsCallback(func([]byte, net.Addr) {})
+		}
 		liteAgent.setSelector()
 
 		local := newPingNoIOCand()
@@ -1676,10 +1677,10 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 		return liteAgent, local, remote, pair
 	}
 
-	t.Run("NoTriggeredCheckWhileChecking", func(t *testing.T) {
-		// Pair is in Waiting state (ICE checking phase). A full controlled agent
-		// would send a triggered check here; a lite one must not.
-		agent, local, remote, pair := setupAgent(t)
+	t.Run("NonSPEDKeepsLegacyTriggeredCheck", func(t *testing.T) {
+		// When SPED is off, keep the legacy behavior exactly: ICE-lite still
+		// sends the triggered check that upstream libwebrtc currently relies on.
+		agent, local, remote, pair := setupAgent(t, false)
 
 		ls, ok := agent.getSelector().(*liteSelector)
 		require.True(t, ok, "expected liteSelector as top-level selector")
@@ -1689,18 +1690,44 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 		sentBefore := pair.RequestsSent()
 		msg := buildMsg(t, agent)
 
+		ls.HandleBindingRequest(msg, local, remote)
+
+		assert.Equal(t, sentBefore+1, pair.RequestsSent(),
+			"non-SPED lite controlled agent should keep the legacy triggered check")
+	})
+
+	t.Run("SPEDSuppressesTriggeredCheckWhileChecking", func(t *testing.T) {
+		// During SPED, the authenticated inbound check is enough evidence for the
+		// ICE-lite controlled side to avoid the extra triggered check.
+		agent, local, remote, pair := setupAgent(t, true)
+
+		ls, ok := agent.getSelector().(*liteSelector)
+		require.True(t, ok, "expected liteSelector as top-level selector")
+		_, ok = ls.pairCandidateSelector.(*controlledSelector)
+		require.True(t, ok, "expected controlledSelector inside liteSelector")
+
+		sentBefore := pair.RequestsSent()
+		msg, err := stun.Build(stun.BindingRequest,
+			stun.TransactionID,
+			stun.NewUsername(agent.localUfrag+":"+agent.remoteUfrag),
+			DtlsInStunAttribute([]byte{0x01}),
+			stun.NewShortTermIntegrity(agent.localPwd),
+			stun.Fingerprint,
+		)
+		require.NoError(t, err)
+
 		for range 5 {
 			ls.HandleBindingRequest(msg, local, remote)
 		}
 
 		assert.Equal(t, sentBefore, pair.RequestsSent(),
-			"lite controlled agent must not send triggered checks during ICE checking")
+			"SPED lite controlled agent must not send triggered checks during ICE checking")
 	})
 
 	t.Run("NoTriggeredCheckWhenSucceededAndSelected", func(t *testing.T) {
 		// Pair is Succeeded and selected. Even a full agent suppresses checks here,
 		// but we verify the lite path also stays clean.
-		agent, local, remote, pair := setupAgent(t)
+		agent, local, remote, pair := setupAgent(t, false)
 		pair.state = CandidatePairStateSucceeded
 		agent.setSelectedPair(pair)
 
@@ -1715,12 +1742,12 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 			"lite controlled agent must not send triggered checks when pair is connected")
 	})
 
-	t.Run("NominationStillAccepted", func(t *testing.T) {
+	t.Run("SPEDNominationAcceptedBeforeSucceeded", func(t *testing.T) {
 		// RFC 8445 §7.3.2: the lite agent must accept USE-CANDIDATE and select the
 		// pair directly, even when the pair has never reached Succeeded state via a
 		// triggered check (which it never sends). Leave the pair in Waiting — the
 		// default after addPair — to confirm the || s.agent.lite branch is exercised.
-		agent, local, remote, pair := setupAgent(t)
+		agent, local, remote, pair := setupAgent(t, true)
 		// Intentionally do NOT set pair.state = CandidatePairStateSucceeded.
 		// A lite agent never generates triggered checks, so the pair will never reach
 		// Succeeded that way. The nomination must be accepted regardless.
@@ -1735,6 +1762,7 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 			stun.TransactionID,
 			stun.NewUsername(agent.localUfrag+":"+agent.remoteUfrag),
 			UseCandidate(),
+			DtlsInStunAttribute([]byte{0x01}),
 			stun.NewShortTermIntegrity(agent.localPwd),
 			stun.Fingerprint,
 		)
@@ -1743,9 +1771,32 @@ func TestLiteControlledSelector_NoPingCandidate(t *testing.T) {
 		ls.HandleBindingRequest(msg, local, remote)
 
 		assert.Equal(t, pair, agent.getSelectedPair(),
-			"lite controlled agent must accept nomination even when pair has not reached Succeeded")
+			"SPED lite controlled agent must accept nomination even when pair has not reached Succeeded")
 		// Still no triggered check emitted
 		assert.Equal(t, uint64(0), pair.RequestsSent())
+	})
+
+	t.Run("NonSPEDNominationStillWaitsForTriggeredCheck", func(t *testing.T) {
+		agent, local, remote, pair := setupAgent(t, false)
+		require.Equal(t, CandidatePairStateWaiting, pair.state, "pair must start in Waiting")
+
+		ls, ok := agent.getSelector().(*liteSelector)
+		require.True(t, ok)
+
+		msg, err := stun.Build(stun.BindingRequest,
+			stun.TransactionID,
+			stun.NewUsername(agent.localUfrag+":"+agent.remoteUfrag),
+			UseCandidate(),
+			stun.NewShortTermIntegrity(agent.localPwd),
+			stun.Fingerprint,
+		)
+		require.NoError(t, err)
+
+		ls.HandleBindingRequest(msg, local, remote)
+
+		assert.Nil(t, agent.getSelectedPair(),
+			"non-SPED lite controlled agent should keep waiting for the legacy triggered check")
+		assert.Equal(t, uint64(1), pair.RequestsSent())
 	})
 }
 
@@ -1794,15 +1845,6 @@ func TestLiteMode_FullToLite_Integration(t *testing.T) {
 
 	<-fullConnected
 	<-liteConnected
-
-	// Verify the lite agent never sent its own connectivity checks.
-	err = liteAgent.loop.Run(liteAgent.loop, func(_ context.Context) {
-		for _, pair := range liteAgent.checklist {
-			assert.Equal(t, uint64(0), pair.RequestsSent(),
-				"lite agent must not send any connectivity checks")
-		}
-	})
-	require.NoError(t, err)
 
 	// Both agents should be able to exchange data.
 	require.True(t, sendUntilDone(t, fullConn, liteConn, 100))
