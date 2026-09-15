@@ -132,9 +132,9 @@ type Agent struct {
 	// Address rewrite (1:1) IP mapping
 	addressRewriteMapper *addressRewriteMapper
 
-	// Callback that allows user to implement custom behavior
-	// for STUN Binding Requests
-	userBindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+	// Optional callbacks for custom selection behavior on the ICE task loop.
+	userBindingRequestHandler      func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+	userCandidatePairPacketHandler CandidatePairPacketHandler
 
 	gatherCandidateCancel func()
 	gatherCandidateDone   chan struct{}
@@ -389,6 +389,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 		includeLoopback:                 config.IncludeLoopback,
 		disableActiveTCP:                config.DisableActiveTCP,
 		userBindingRequestHandler:       config.BindingRequestHandler,
+		userCandidatePairPacketHandler:  config.CandidatePairPacketHandler,
 		enableUseCandidateCheckPriority: config.EnableUseCandidateCheckPriority,
 		enableRenomination:              false,
 		nominationValueGenerator:        nil,

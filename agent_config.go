@@ -70,6 +70,16 @@ func defaultRelayAcceptanceMinWaitFor(candidateTypes []CandidateType) time.Durat
 	return defaultRelayAcceptanceMinWait
 }
 
+// CandidatePairPacketHandler observes non-STUN packets from an existing,
+// unselected candidate pair while another pair is selected. Returning true
+// selects pair and, for a lite agent, puts it in the valid list (Succeeded).
+// The application must establish any required authentication before selecting
+// it: neither a known candidate nor this callback authenticates the packet.
+//
+// The handler runs on the ICE task loop and must not block or call synchronous
+// Agent methods. packet is read-only and valid only until the handler returns.
+type CandidatePairPacketHandler func(packet []byte, pair, selected *CandidatePair) bool
+
 // AgentConfig collects the arguments to ice.Agent construction into
 // a single structure, for future-proofness of the interface.
 //
@@ -237,6 +247,10 @@ type AgentConfig struct {
 	// * Implement draft-thatcher-ice-renomination
 	// * Implement custom CandidatePair switching logic
 	BindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+
+	// CandidatePairPacketHandler optionally allows selection using application
+	// packet observations. A nil handler leaves normal ICE selection unchanged.
+	CandidatePairPacketHandler CandidatePairPacketHandler
 
 	// EnableUseCandidateCheckPriority can be used to enable checking for equal or higher priority to
 	// switch selected candidate pair if the peer requests USE-CANDIDATE and agent is a lite agent.

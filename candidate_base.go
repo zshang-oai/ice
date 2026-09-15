@@ -356,6 +356,10 @@ func (c *candidateBase) handleInboundPacket(buf []byte, srcAddr net.Addr) {
 		c.addRemoteCandidateCache(remoteCandidate, srcAddr)
 	}
 
+	if agent.userCandidatePairPacketHandler != nil {
+		c.handleCandidatePairPacket(buf, srcAddr)
+	}
+
 	// Note: This will return packetio.ErrFull if the buffer ever manages to fill up.
 	n, err := agent.buf.Write(buf)
 	if err != nil {
@@ -369,6 +373,38 @@ func (c *candidateBase) handleInboundPacket(buf []byte, srcAddr net.Addr) {
 		if sp := agent.getSelectedPair(); sp != nil {
 			sp.UpdatePacketReceived(n)
 		}
+	}
+}
+
+func (c *candidateBase) handleCandidatePairPacket(buf []byte, srcAddr net.Addr) {
+	agent := c.agent()
+	selected := agent.getSelectedPair()
+	// Keep ordinary selected-path traffic off the task loop.
+	if selected == nil || selected.Local.Equal(c) && addrEqual(selected.Remote.addr(), srcAddr) {
+		return
+	}
+	// Run waits for completion, so the receive buffer remains valid throughout
+	// the callback. Recheck selection after entering the serialized loop.
+	if err := agent.loop.Run(c, func(_ context.Context) {
+		selected = agent.getSelectedPair()
+		remote := agent.findRemoteCandidate(c.NetworkType(), srcAddr)
+		if selected == nil || remote == nil {
+			return
+		}
+		pair := agent.findPair(c, remote)
+		if pair == nil || pair == selected {
+			return
+		}
+		if agent.userCandidatePairPacketHandler(buf, pair, selected) {
+			if agent.lite {
+				// The application-approved lite path enters the valid list
+				// without an outbound connectivity check.
+				pair.state = CandidatePairStateSucceeded
+			}
+			agent.setSelectedPair(pair)
+		}
+	}); err != nil {
+		agent.log.Warnf("Failed to handle unselected pair packet: %v", err)
 	}
 }
 

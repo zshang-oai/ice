@@ -789,6 +789,20 @@ func WithBindingRequestHandler(
 	}
 }
 
+// WithCandidatePairPacketHandler sets the optional non-STUN packet handler.
+// See CandidatePairPacketHandler for its authentication and lifetime contract.
+func WithCandidatePairPacketHandler(handler CandidatePairPacketHandler) AgentOption {
+	return func(a *Agent) error {
+		if a.constructed {
+			return ErrAgentOptionNotUpdatable
+		}
+
+		a.userCandidatePairPacketHandler = handler
+
+		return nil
+	}
+}
+
 // WithEnableUseCandidateCheckPriority enables checking for equal or higher priority when
 // switching selected candidate pair if the peer requests USE-CANDIDATE and agent is a lite agent.
 // This is disabled by default, i.e. when peer requests USE-CANDIDATE, the selected pair will be
