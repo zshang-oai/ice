@@ -794,6 +794,20 @@ func WithBindingRequestHandler(
 	}
 }
 
+// WithCandidatePairPacketHandler sets the optional non-STUN packet handler.
+// See CandidatePairPacketHandler for its authentication and lifetime contract.
+func WithCandidatePairPacketHandler(handler CandidatePairPacketHandler) AgentOption {
+	return func(a *Agent) error {
+		if a.constructed {
+			return ErrAgentOptionNotUpdatable
+		}
+
+		a.userCandidatePairPacketHandler = handler
+
+		return nil
+	}
+}
+
 // WithSTUNSendHandler sets a handler for outbound Binding responses before
 // SPED attributes, message integrity and fingerprint are added.
 func WithSTUNSendHandler(handler STUNSendHandler) AgentOption {

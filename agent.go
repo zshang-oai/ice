@@ -157,8 +157,9 @@ type Agent struct {
 
 	// Callback that allows user to implement custom behavior
 	// for STUN Binding Requests
-	userBindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
-	stunSendHandler           STUNSendHandler
+	userBindingRequestHandler      func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+	stunSendHandler                STUNSendHandler
+	userCandidatePairPacketHandler CandidatePairPacketHandler
 
 	gatherCandidateCancel func()
 	gatherCandidateDone   chan struct{}
@@ -390,6 +391,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 		includeLoopback:                 config.IncludeLoopback,
 		disableActiveTCP:                config.DisableActiveTCP,
 		userBindingRequestHandler:       config.BindingRequestHandler,
+		userCandidatePairPacketHandler:  config.CandidatePairPacketHandler,
 		enableUseCandidateCheckPriority: config.EnableUseCandidateCheckPriority,
 		enableRenomination:              false,
 		nominationValueGenerator:        nil,
