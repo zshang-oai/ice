@@ -41,6 +41,17 @@ type bindingRequest struct {
 	nominationValue *uint32 // Tracks nomination value for renomination requests
 }
 
+// STUNSendHandler allows applications to inspect or modify outbound Binding
+// responses before SPED attributes, message integrity and fingerprint are added.
+// The callback receives the outbound response and its inbound request.
+type STUNSendHandler func(outbound, inbound *stun.Message, local, remote Candidate) error
+
+type stunSendSetterFunc func(*stun.Message) error
+
+func (f stunSendSetterFunc) AddTo(message *stun.Message) error {
+	return f(message)
+}
+
 // Agent represents the ICE agent.
 type Agent struct {
 	loop *taskloop.Loop
@@ -147,6 +158,7 @@ type Agent struct {
 	// Callback that allows user to implement custom behavior
 	// for STUN Binding Requests
 	userBindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+	stunSendHandler           STUNSendHandler
 
 	gatherCandidateCancel func()
 	gatherCandidateDone   chan struct{}
@@ -1777,6 +1789,13 @@ func (a *Agent) sendBindingSuccess(m *stun.Message, local, remote Candidate) {
 			IP:   ip.AsSlice(),
 			Port: port,
 		},
+		stunSendSetterFunc(func(outbound *stun.Message) error {
+			if a.stunSendHandler == nil {
+				return nil
+			}
+
+			return a.stunSendHandler(outbound, m, local, remote)
+		}),
 	}
 	attributes = a.appendPiggybackAttributes(attributes)
 	attributes = append(attributes,
