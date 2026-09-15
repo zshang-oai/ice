@@ -187,6 +187,17 @@ func (c *Conn) Write(packet []byte) (int, error) {
 	return n, err
 }
 
+// CanWrite reports whether a selected or valid pair is available for writing.
+// It can be called from synchronous ICE callbacks without reentering the task loop.
+// A concurrent restart or route change can still invalidate a later Write.
+func (c *Conn) CanWrite() bool {
+	if c.agent.loop.Err() != nil {
+		return false
+	}
+
+	return c.agent.getSelectedPair() != nil || c.agent.hasValidPair.Load()
+}
+
 // GetCandidatePairsInfo returns snapshot information for all candidate pairs.
 // Use the returned ID with WriteToPair() to write to a specific pair.
 func (c *Conn) GetCandidatePairsInfo() []CandidatePairInfo {
