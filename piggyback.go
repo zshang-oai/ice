@@ -60,30 +60,67 @@ func (p *piggybackingController) init() {
 }
 
 // flushOnConnected returns any pending packets that need to be sent as plain
-// DTLS once the ICE connection is established with piggybacking disabled.
+// DTLS once the ICE connection is established with piggybacking disabled or complete.
 func (p *piggybackingController) flushOnConnected() []packetWithCrc {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.connected = true
-	if p.state != PiggybackingStateOff {
+	if p.state != PiggybackingStateOff && p.state != PiggybackingStateComplete {
 		return nil
 	}
 	packets := p.packets
 	p.packets = []packetWithCrc{}
+	p.packetsIndex = 0
 
 	return packets
 }
 
+func (p *piggybackingController) resetLocked(state piggybackingState, cb func(packet []byte, rAddr net.Addr)) {
+	p.state = state
+	p.packets = []packetWithCrc{}
+	p.packetsIndex = 0
+	p.acks = []uint32{}
+	p.dtlsCallback = cb
+}
+
+func (p *piggybackingController) finishLocked() {
+	p.state = PiggybackingStatePending
+	// SetDtlsHandshakeComplete already decided whether this role must retain
+	// its final flight. Detaching the receive callback must preserve that choice.
+	if p.acks == nil {
+		p.acks = []uint32{}
+	}
+	p.dtlsCallback = nil
+}
+
 // SetDtlsCallback sets the callback for DTLS packets. Setting this callback
 // initializes state of the piggybacking state machine to "tentative", i.e.
-// expecting embedded packets.
+// expecting embedded packets. Clearing the callback resets the controller,
+// except after local completion, when ACKs and any retained final flight remain
+// available to finish the exchange.
 func (a *Agent) SetDtlsCallback(cb func(packet []byte, rAddr net.Addr)) {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
-	a.piggyback.dtlsCallback = cb
 	if cb != nil {
-		a.piggyback.state = PiggybackingStateTentative
+		a.piggyback.resetLocked(PiggybackingStateTentative, cb)
+
+		return
 	}
+	if a.piggyback.state == PiggybackingStatePending {
+		a.piggyback.finishLocked()
+
+		return
+	}
+	a.piggyback.resetLocked(PiggybackingStateOff, nil)
+}
+
+func (a *Agent) isPiggybackingActive() bool {
+	a.piggyback.mu.Lock()
+	defer a.piggyback.mu.Unlock()
+
+	return a.piggyback.dtlsCallback != nil &&
+		a.piggyback.state != PiggybackingStateOff &&
+		a.piggyback.state != PiggybackingStateComplete
 }
 
 // SetDtlsFailed disables piggybacking after the DTLS handshake failed.
@@ -119,7 +156,8 @@ func (a *Agent) SetDtlsHandshakeComplete(isClient bool, version protocol.Version
 func (a *Agent) Piggyback(datagrams [][]byte, _ net.Addr) bool {
 	a.piggyback.mu.Lock()
 	defer a.piggyback.mu.Unlock()
-	if a.piggyback.state == PiggybackingStateOff && a.piggyback.connected {
+	if (a.piggyback.state == PiggybackingStateOff || a.piggyback.state == PiggybackingStateComplete) &&
+		a.piggyback.connected {
 		return false
 	}
 
@@ -194,6 +232,8 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 		a.log.Info("Done with the SPED handshake")
 		a.piggyback.acks = nil
 		a.piggyback.state = PiggybackingStateComplete
+		a.piggyback.packets = []packetWithCrc{}
+		a.piggyback.packetsIndex = 0
 		a.piggyback.mu.Unlock()
 
 		return
@@ -203,22 +243,20 @@ func (a *Agent) ReportPiggybacking(packet []byte, acks []uint32, rAddr net.Addr)
 	}
 	// Handle incoming acks.
 	if size := len(acks); size > 0 {
-		beforeLen := len(a.piggyback.packets)
 		a.piggyback.packets = slices.DeleteFunc(a.piggyback.packets, func(p packetWithCrc) bool {
 			// Remove packets that were acknowledged.
 			return slices.Contains(acks, p.crc)
 		})
-		removed := beforeLen - len(a.piggyback.packets)
-
-		// Adjust the index if it's out of bounds after deletion
-		if a.piggyback.packetsIndex >= removed {
-			a.piggyback.packetsIndex -= removed
-		} else {
+		if len(a.piggyback.packets) == 0 {
 			a.piggyback.packetsIndex = 0
+		} else if a.piggyback.packetsIndex >= len(a.piggyback.packets) {
+			a.piggyback.packetsIndex %= len(a.piggyback.packets)
 		}
 	}
-	// The response to the final flight will not contain DTLS data but an ack.
-	if packet == nil && acks != nil && a.piggyback.state == PiggybackingStatePending {
+	// An ACK-only message can be delayed or acknowledge only part of the final
+	// flight. Stop retransmitting only after all outgoing packets are acknowledged.
+	if packet == nil && acks != nil && a.piggyback.state == PiggybackingStatePending &&
+		len(a.piggyback.packets) == 0 {
 		a.log.Info("Done with the SPED handshake")
 		a.piggyback.acks = nil
 		a.piggyback.state = PiggybackingStateComplete

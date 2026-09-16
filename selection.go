@@ -159,7 +159,7 @@ func (a *Agent) handleBindingRequestWithCustomHandler(
 		if a.lite {
 			// Lite agents do not send triggered checks, so a handler-approved
 			// custom selection must put the pair in the valid list directly.
-			pair.state = CandidatePairStateSucceeded
+			a.markPairSucceeded(pair)
 		}
 		a.setSelectedPair(pair)
 	}
@@ -199,7 +199,7 @@ func (s *controllingSelector) HandleSuccessResponse(
 		return
 	}
 
-	pair.state = CandidatePairStateSucceeded
+	s.agent.markPairSucceeded(pair)
 	s.log.Tracef("Found valid candidate pair: %s", pair)
 
 	// Handle nomination/renomination
@@ -436,7 +436,7 @@ func (s *controlledSelector) HandleSuccessResponse(
 		return
 	}
 
-	pair.state = CandidatePairStateSucceeded
+	s.agent.markPairSucceeded(pair)
 	s.log.Tracef("Found valid candidate pair: %s", pair)
 	if pair.nominateOnBindingSuccess {
 		if selectedPair := s.agent.getSelectedPair(); selectedPair == nil ||
@@ -454,13 +454,16 @@ func (s *controlledSelector) HandleSuccessResponse(
 }
 
 func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, remote Candidate) { //nolint:cyclop
-	s.agent.reportPiggybackingFromMessage(message, remote)
-
 	pair := s.agent.findPair(local, remote)
 	if pair == nil {
 		pair = s.agent.addPair(local, remote)
 	}
 	pair.UpdateRequestReceived()
+	if s.agent.lite && s.agent.isPiggybackingActive() && pair.state != CandidatePairStateFailed {
+		// Establish the authenticated inbound SPED route before DTLS responds.
+		s.agent.markPairSucceeded(pair)
+	}
+	s.agent.reportPiggybackingFromMessage(message, remote)
 
 	hasUseCandidate := message.Contains(stun.AttrUseCandidate)
 	hasValidNomination := false
@@ -489,7 +492,7 @@ func (s *controlledSelector) HandleBindingRequest(message *stun.Message, local, 
 			// Pion represents membership in the valid list as Succeeded. RFC 8445
 			// Section 7.3.2 puts an accepted lite nomination directly into the
 			// valid list without an outbound triggered check.
-			pair.state = CandidatePairStateSucceeded
+			s.agent.markPairSucceeded(pair)
 		}
 
 		if pair.state == CandidatePairStateSucceeded {
@@ -550,7 +553,7 @@ func (s *liteSelector) ContactCandidates() {
 		return
 	}
 
-	pair.state = CandidatePairStateSucceeded
+	s.agent.markPairSucceeded(pair)
 	// lite candidates pair becomes valid without a connectivity check. so we need to
 	// start its liveness window now so a later candidate update does not immediately
 	// fail a pair whose LastReceived timestamp is still zero.

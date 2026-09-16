@@ -123,6 +123,8 @@ type Agent struct {
 	checklist  []*CandidatePair
 	nextPairID uint64
 	pairsByID  map[uint64]*CandidatePair
+	// Updated on the task loop; readable from synchronous DTLS callbacks.
+	hasValidPair atomic.Bool
 
 	selectorLock sync.RWMutex
 	selector     pairCandidateSelector
@@ -765,12 +767,20 @@ func (a *Agent) updateConnectionState(newState ConnectionState) {
 
 	// Connection has gone to failed, release all gathered candidates
 	if newState == ConnectionStateFailed {
+		// The SPED send decision must stop relying on the discarded route.
+		a.piggyback.mu.Lock()
+		a.piggyback.connected = false
+		a.piggyback.mu.Unlock()
 		a.removeUfragFromMux()
 		a.checklist = make([]*CandidatePair, 0)
+		a.hasValidPair.Store(false)
 		a.pairsByID = make(map[uint64]*CandidatePair)
 		a.pendingBindingRequests = make([]bindingRequest, 0)
 		a.setSelectedPair(nil)
 		a.deleteAllCandidates()
+	}
+	if newState == ConnectionStateClosed {
+		a.hasValidPair.Store(false)
 	}
 
 	if newState == ConnectionStateConnected {
@@ -782,9 +792,8 @@ func (a *Agent) updateConnectionState(newState ConnectionState) {
 	a.connectionStateNotifier.EnqueueConnectionState(newState)
 }
 
-// flushPiggyback sends any DTLS packets that were queued while piggybacking
-// turned out to be unsupported as plain DTLS over the selected pair once the
-// ICE connection is established.
+// flushPiggyback sends queued DTLS over the selected pair once ICE connects
+// with piggybacking disabled or complete.
 func (a *Agent) flushPiggyback() {
 	packets := a.piggyback.flushOnConnected()
 	if len(packets) == 0 {
@@ -910,6 +919,17 @@ func (a *Agent) getBestValidCandidatePair() *CandidatePair {
 	}
 
 	return best
+}
+
+// markPairSucceeded runs on the task loop and publishes write readiness.
+func (a *Agent) markPairSucceeded(pair *CandidatePair) {
+	pair.state = CandidatePairStateSucceeded
+	a.hasValidPair.Store(true)
+}
+
+// refreshValidPair runs on the task loop after a valid pair is demoted.
+func (a *Agent) refreshValidPair() {
+	a.hasValidPair.Store(a.getBestValidCandidatePair() != nil)
 }
 
 func (a *Agent) addPair(local, remote Candidate) *CandidatePair {
@@ -2047,6 +2067,7 @@ func (a *Agent) handleInboundErrorResponse(
 		a.log.Warnf("Cannot re-enqueue candidate pair, remote candidate not found for %s", bindingReq.destination)
 	} else if pair := a.findPair(local, remoteCandidate); pair != nil {
 		pair.state = CandidatePairStateWaiting
+		a.refreshValidPair()
 		pair.bindingRequestCount = 0
 	} else {
 		a.log.Warnf("Cannot re-enqueue candidate pair for %s, not found in checklist", bindingReq.destination)
@@ -2187,6 +2208,10 @@ func (a *Agent) Restart(ufrag, pwd string) error { //nolint:cyclop
 	}
 
 	if runErr := a.loop.Run(a.loop, func(_ context.Context) {
+		// Preserve buffering until a route in the new generation is selected.
+		a.piggyback.mu.Lock()
+		a.piggyback.connected = false
+		a.piggyback.mu.Unlock()
 		// Cancel the previous gather before resetting its state.
 		a.gatherCandidateCancel()
 		if a.constructed {
@@ -2202,6 +2227,7 @@ func (a *Agent) Restart(ufrag, pwd string) error { //nolint:cyclop
 		a.remotePwd = ""
 		a.remoteCandidateGeneration++
 		a.checklist = make([]*CandidatePair, 0)
+		a.hasValidPair.Store(false)
 		a.pairsByID = make(map[uint64]*CandidatePair)
 		a.pendingBindingRequests = make([]bindingRequest, 0)
 		a.setSelectedPair(nil)
